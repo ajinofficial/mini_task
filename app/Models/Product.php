@@ -1,0 +1,21 @@
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+
+class Product extends Model
+{
+    protected $fillable = array('name', 'code', 'price', 'tax_percentage', 'stock');
+
+    protected function casts(): array
+    {
+        return array('price' => 'decimal:2', 'tax_percentage' => 'decimal:2', 'stock' => 'integer');
+    }
+
+    public function orderItems(): HasMany
+    {
+        return $this->hasMany(OrderItem::class);
+    }
+}
