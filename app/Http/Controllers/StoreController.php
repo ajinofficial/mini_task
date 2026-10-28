@@ -2,145 +2,148 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Requests\ApiOrderRequest;
+use App\Http\Requests\CustomerRequest;
+use App\Http\Requests\OrderRequest;
+use App\Http\Requests\PaymentRequest;
+use App\Http\Requests\ProductRequest;
 use App\Models\Customer;
 use App\Models\Order;
-use App\Models\OrderItem;
 use App\Models\Product;
+use App\Services\OrderService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
-use Illuminate\Validation\ValidationException;
 use Illuminate\View\View;
 
 class StoreController extends Controller
 {
+    public function __construct(private OrderService $orders) {}
+
     public function index(Request $request): View
     {
-        $orders    = Order::with('customer', 'items')->latest()->get();
-        $customers = Customer::with('orders')->withCount('orders')->orderBy('name')->get();
+        $page = $request->route('page') ?? $request->query('tab', 'overview');
+        $page = in_array($page, ['overview', 'orders', 'products', 'customers'], true) ? $page : 'overview';
 
-        return view('store', array(
-            'products'  => Product::orderBy('name')->get(),
-            'customers' => $customers,
-            'orders'    => $orders,
-            'metrics'   => array(
-                'sales'      => Order::sum('total'),
-                'orderCount' => Order::count(),
-                'products'   => Product::count(),
-                'lowStock'   => Product::where('stock', '<=', 5)->count(),
-            ),
-            'activeTab' => $request->query('tab', 'overview'),
-        ));
+        $orders     = Order::with('customer', 'items')->latest()->get();
+        $customers  = Customer::with('orders')->withCount('orders')->orderBy('name')->get();
+        $points     = [];
+
+        foreach([36, 52, 43, 66, 55, 73, 60, 84, 69, 92, 76, 104] as $i => $value) 
+        {
+            $points[] = (22 + $i * 69).','.(151 - $value);
+        }
+
+        $chartLine    = implode(' ', $points);
+
+        return view('store.'.$page, [
+            'icons'         => ['HME-001' => '☕', 'BAG-014' => '◫', 'HME-026' => '◉', 'KIT-008' => '◍', 'KIT-021' => '▤', 'DEC-003' => '♢'],
+            'avatars'       => ['avatar', 'blue', 'rose', 'violet'],
+            'recentOrders'  => $orders,
+            'chartLine'     => $chartLine,
+            'chartArea'     => '22,151 '.$chartLine.' 781,151',
+            'products'      => Product::orderBy('name')->get(),
+            'customers'     => $customers,
+            'orders'        => $orders,
+            'metrics'       => [
+                'sales'         => Order::sum('total'),
+                'orderCount'    => Order::count(),
+                'products'      => Product::count(),
+                'lowStock'      => Product::where('stock', '<=', 5)->count(),
+            ],
+            'activeTab'     => $page,
+        ]);
     }
 
-    public function createProduct(Request $request): RedirectResponse
+    public function createProduct(ProductRequest $request): RedirectResponse|JsonResponse
     {
-        $data = $request->validate(array(
-            'name'              => ['required', 'string', 'max:120'],
-            'code'              => ['required', 'string', 'max:40', 'unique:products,code'],
-            'price'             => ['required', 'numeric', 'min:0.01', 'max:99999999'],
-            'tax_percentage'    => ['required', 'numeric', 'min:0', 'max:100'],
-            'stock'             => ['required', 'integer', 'min:0', 'max:1000000'],
-        ));
+        $data    = $request->validated();
+        $product = Product::create($data);
 
-        Product::create($data);
+        if($request->expectsJson()) 
+        {
+            return response()->json([
+                'message'   => 'Product added to your catalog.',
+                'data'      => $product,
+                'html'      => $this->index($request)->render(),
+            ], 201);
+        }
 
-        return redirect('/?tab=products')->with('success', 'Product added to your catalog.');
+        return redirect()->route('products.index')->with('success', 'Product added to your catalog.');
     }
 
-    public function createCustomer(Request $request): RedirectResponse
+    public function updateProduct(ProductRequest $request, Product $product): RedirectResponse|JsonResponse
     {
-        $data = $request->validate(array(
-            'name'  => ['required', 'string', 'max:120'],
-            'email' => ['required', 'email', 'max:190', 'unique:customers,email'],
-        ));
+        $data = $request->validated();
 
-        Customer::create($data);
+        $product->update($data);
 
-        return redirect('/?tab=customers')->with('success', 'Customer added to your directory.');
+        if($request->expectsJson()) 
+        {
+            return response()->json([
+                'message'   => 'Product updated successfully.',
+                'data'      => $product->fresh(),
+                'html'      => $this->index($request)->render(),
+            ]);
+        }
+
+        return redirect()->route('products.index')->with('success', 'Product updated successfully.');
     }
 
-    public function createOrder(Request $request): RedirectResponse
+    public function createCustomer(CustomerRequest $request): RedirectResponse|JsonResponse
     {
-        $request->merge(['items' => collect($request->input('items', []))->filter(fn ($line) => ! empty($line['product_id']))->values()->all()]);
+        $data       = $request->validated();
+        $customer   = Customer::create($data);
 
-        $validated = $request->validate(array(
-            'customer_id'           => ['required', 'exists:customers,id'],
-            'items'                 => ['required', 'array', 'min:1'],
-            'items.*.product_id'    => ['required', 'integer', 'distinct', 'exists:products,id'],
-            'items.*.quantity'      => ['required', 'integer', 'min:1', 'max:1000000'],
-        ));
+        if($request->expectsJson()) 
+        {
+            return response()->json([
+                'message'   => 'Customer added to your directory.',
+                'data'      => $customer,
+                'html'      => $this->index($request)->render(),
+            ], 201);
+        }
 
-        $order = $this->saveOrder((int) $validated['customer_id'], $validated['items']);
-
-        return redirect('/?tab=orders')->with('success', 'Order #'.str_pad((string) $order->id, 5, '0', STR_PAD_LEFT).' created and stock updated.');
+        return redirect()->route('customers.index')->with('success', 'Customer added to your directory.');
     }
 
-    public function apiCreateOrder(Request $request): JsonResponse
+    public function createOrder(OrderRequest $request): RedirectResponse|JsonResponse
     {
-        $request->merge(['items' => collect($request->input('items', []))->filter(fn ($line) => ! empty($line['product_id']))->values()->all()]);
+        $validated  = $request->validated();
+        $order      = $this->orders->create((int) $validated['customer_id'], $validated['items'], (float) ($validated['paid_amount'] ?? 0));
 
-        $validated = $request->validate(array(
-            'customer_id'           => ['required', 'exists:customers,id'],
-            'items'                 => ['required', 'array', 'min:1'],
-            'items.*.product_id'    => ['required', 'integer', 'distinct', 'exists:products,id'],
-            'items.*.quantity'      => ['required', 'integer', 'min:1', 'max:1000000'],
-        ));
+        if($request->expectsJson()) 
+        {
+            return response()->json([
+                'message'   => 'Order #'.str_pad((string) $order->id, 5, '0', STR_PAD_LEFT).' created and stock updated.',
+                'data'      => $order->load(['customer', 'items.product']),
+                'products'  => Product::orderBy('name')->get(),
+                'html'      => $this->index($request)->render(),
+            ], 201);
+        }
 
-        $order = $this->saveOrder((int) $validated['customer_id'], $validated['items']);
+        return redirect()->route('orders.index')->with('success', 'Order #'.str_pad((string) $order->id, 5, '0', STR_PAD_LEFT).' created and stock updated.');
+    }
+
+    public function payBalance(PaymentRequest $request, Order $order): JsonResponse
+    {
+        $validated  = $request->validated();
+        $order      = $this->orders->payBalance($order, $validated);
+
+        return response()->json([
+            'message'   => 'Payment recorded successfully.',
+            'data'      => $order,
+            'html'      => $this->index($request)->render(),
+        ]);
+    }
+
+    public function apiCreateOrder(ApiOrderRequest $request): JsonResponse
+    {
+        $validated  = $request->validated();
+        $order      = $this->orders->createFromApi($validated);
 
         $order->load(['customer', 'items.product']);
 
         return response()->json(['message' => 'Order created successfully.', 'data' => $order], 201);
-    }
-
-    private function saveOrder(int $customerId, array $lines): Order
-    {
-        return DB::transaction(function () use ($customerId, $lines) {
-            $products = Product::whereIn('id', collect($lines)->pluck('product_id'))->orderBy('id')->lockForUpdate()->get()->keyBy('id');
-            $subtotal = 0;
-            $taxTotal = 0;
-            $prepared = [];
-
-            foreach($lines as $line) 
-            {
-                $product  = $products->get((int) $line['product_id']);
-                $quantity = (int) $line['quantity'];
-
-                if(!$product || $quantity > $product->stock) 
-                {
-                    throw ValidationException::withMessages(['items' => 'One or more quantities exceed the available stock.']);
-                }
-
-                $lineSubtotal = round((float) $product->price * $quantity, 2);
-                $lineTax      = round($lineSubtotal * (float) $product->tax_percentage / 100, 2);
-                $subtotal    += $lineSubtotal;
-                $taxTotal    += $lineTax;
-                $prepared[]   = compact('product', 'quantity', 'lineSubtotal', 'lineTax');
-            }
-
-            $order = Order::create(['customer_id' => $customerId, 'subtotal' => $subtotal, 'tax' => $taxTotal, 'total' => $subtotal + $taxTotal]);
-
-            foreach($prepared as $line) 
-            {
-                $product = $line['product'];
-
-                OrderItem::create([
-                    'order_id'          => $order->id,
-                    'product_id'        => $product->id,
-                    'quantity'          => $line['quantity'],
-                    'unit_price'        => $product->price,
-                    'tax_percentage'    => $product->tax_percentage,
-                    'subtotal'          => $line['lineSubtotal'],
-                    'tax'               => $line['lineTax'],
-                    'total'             => $line['lineSubtotal'] + $line['lineTax'],
-                ]);
-                
-                $product->decrement('stock', $line['quantity']);
-            }
-
-            return $order;
-        });
     }
 }

@@ -7,6 +7,43 @@
 <a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
 </p>
 
+## Store APIs and validation
+
+Send `Accept: application/json` and `Content-Type: application/json` for JSON requests. API routes use Laravel's stateless API middleware; the existing browser forms still use CSRF protection.
+
+- `POST /api/orders` accepts the existing `customer_id` payload or `email` and `name`, with `items` containing `product_id` and `quantity`. Optional `paid_amount` works as before. An existing email reuses the customer without renaming them; an unknown email creates a customer inside the order transaction. Failed orders roll back that new customer. If both identity formats are supplied, `customer_id` takes precedence.
+- `GET /api/customers/orders?email=olivia.chen%40example.com` returns the matching customer and their orders, newest first, with item/product details. An existing customer without orders returns an empty list. An unknown email returns 404; invalid email input returns 422.
+- `GET /api/products/low-stock?threshold=5` returns products with stock less than or equal to the threshold, including zero stock. Omit the query parameter to use `LOW_STOCK_THRESHOLD` from `.env` (default 5). Invalid thresholds return 422. The existing dashboard's five-unit display behavior is preserved.
+
+Example order payload:
+
+```json
+{
+  "email": "customer@example.com",
+  "name": "Example Customer",
+  "items": [{"product_id": 1, "quantity": 2}],
+  "paid_amount": 40
+}
+```
+
+Validation lives in `app/Http/Requests`. Order creation, payment updates, tax calculation, stock deduction, and confirmation dispatch live in `app/Services/OrderService.php`. Existing browser/AJAX responses and calculations are preserved.
+
+Order writes reserve SQLite's writer before reading stock, with a five-second busy timeout and up to five transaction attempts. `IMMEDIATE` mode is configured; on older PHP versions where Laravel ignores that setting, a no-row UPDATE reserves the writer without changing data. MySQL/PostgreSQL continue to use ordered row locks. The concurrency test starts two independent PHP processes against an isolated SQLite file: one buys the last unit and the other receives a 422 stock error; only one order and confirmation job are created.
+
+Run `php artisan test` to verify the existing flows, new APIs, queue processing, and simultaneous last-unit ordering. API validation failures return Laravel's standard 422 JSON errors.
+
+## Running confirmation jobs
+
+Successful order creation queues `App\Jobs\SendOrderConfirmation` after the database transaction commits. Both the web/AJAX and API order endpoints use this job. Failed validation or a rolled back transaction does not send a confirmation.
+
+Use `QUEUE_CONNECTION=database` in `.env` (already configured), run `php artisan migrate`, then start the worker:
+
+```sh
+php artisan queue:work --tries=3
+```
+
+For a single pending job, use `php artisan queue:work --once`. The job simulates an email by logging `Order confirmation email simulated.` with the order number, customer email, and INR total to the configured Laravel log (normally `storage/logs/laravel.log`). No SMTP connection is used. Jobs wait in the database until a worker runs.
+
 ## About Laravel
 
 Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
