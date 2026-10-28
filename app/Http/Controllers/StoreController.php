@@ -20,6 +20,11 @@ class StoreController extends Controller
 {
     public function __construct(private OrderService $orders) {}
 
+    public function bill(Order $order): View
+    {
+        return view('store.bill', ['order' => $order->load(['customer', 'items.product'])]);
+    }
+
     public function index(Request $request): View
     {
         $page = $request->route('page') ?? $request->query('tab', 'overview');
